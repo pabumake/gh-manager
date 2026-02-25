@@ -1,0 +1,15 @@
+# Build artifacts
+/gh-manager
+dist/
+
+# Local backup artifacts
+gh-manager-archive-*
+
+# Local plan artifacts
+deletion-plan-*.json
+plan.json
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/
