@@ -20,18 +20,18 @@ func TestAllocateColumnWidths(t *testing.T) {
 }
 
 func TestEnsureVisible(t *testing.T) {
-	m := model{
+	tb := repoTable{
 		filtered: make([]int, 200),
 		height:   20,
 	}
-	m.cursor = 120
-	m.ensureVisible()
-	if m.scroll == 0 {
+	tb.cursor = 120
+	tb.ensureVisible(0)
+	if tb.scroll == 0 {
 		t.Fatalf("expected scroll to move for deep cursor")
 	}
-	m.cursor = 0
-	m.ensureVisible()
-	if m.scroll != 0 {
-		t.Fatalf("expected scroll reset near top, got %d", m.scroll)
+	tb.cursor = 0
+	tb.ensureVisible(0)
+	if tb.scroll != 0 {
+		t.Fatalf("expected scroll reset near top, got %d", tb.scroll)
 	}
 }

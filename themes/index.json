@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "themes": [
+    {
+      "id": "catppuccin-mocha",
+      "name": "Catppuccin Mocha",
+      "description": "Catppuccin Mocha inspired palette for gh-manager",
+      "url": "catppuccin-mocha.json"
+    }
+  ]
+}
