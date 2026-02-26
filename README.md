@@ -55,6 +55,7 @@ Installer behavior:
 - Installer auto-installs and applies `catppuccin-mocha`.
 - Uninstaller mode removes binary and cleans PATH entry (Windows user PATH).
 - If `PATH` updates are not visible immediately, open a new shell.
+- TUI checks for updates on startup and shows an update indicator next to version when available.
 
 ## Quick Start
 
@@ -66,6 +67,7 @@ Installer behavior:
 ## Full Documentation
 
 - [User Guide](docs/user-guide.md)
+- [Changelog](CHANGELOG.md)
 - [Commands](docs/user-guide.md#commands)
 - [TUI Controls](docs/user-guide.md#tui-controls)
 - [Configuration and Themes](docs/user-guide.md#configuration-and-themes)

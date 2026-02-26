@@ -27,14 +27,16 @@ type restoreState struct {
 	active bool
 	stage  restoreStage
 
-	browserDir    string
-	browserCursor int
-	browserItems  []browserItem
+	browserDir     string
+	browserCursor  int
+	browserItems   []browserItem
+	browserHScroll int
 
 	archiveRoot string
 	repoCursor  int
 	repos       []restoreRepoItem
 	selected    restoreRepoItem
+	repoHScroll int
 
 	promptInput string
 }
@@ -130,6 +132,12 @@ func (m appModel) updateRestoreFlow(key string) (tea.Model, tea.Cmd) {
 			if s.browserCursor < len(s.browserItems)-1 {
 				s.browserCursor++
 			}
+		case "left", "h":
+			if s.browserHScroll > 0 {
+				s.browserHScroll--
+			}
+		case "right", "l":
+			s.browserHScroll++
 		case "backspace":
 			s.browserDir = filepath.Dir(s.browserDir)
 			m.restoreState = s
@@ -193,6 +201,12 @@ func (m appModel) updateRestoreFlow(key string) (tea.Model, tea.Cmd) {
 			if s.repoCursor < len(s.repos)-1 {
 				s.repoCursor++
 			}
+		case "left", "h":
+			if s.repoHScroll > 0 {
+				s.repoHScroll--
+			}
+		case "right", "l":
+			s.repoHScroll++
 		case "enter":
 			if len(s.repos) == 0 {
 				break

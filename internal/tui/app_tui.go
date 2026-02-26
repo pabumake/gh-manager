@@ -27,6 +27,8 @@ type AppCallbacks struct {
 	ThemeInstall    func(id string) (string, error)
 	ThemeApply      func(id string) (UITheme, string, error)
 	ThemeUninstall  func(id string) (UITheme, string, error)
+	UpdateCheck     func() (UpdateInfo, error)
+	UpdateRun       func() (string, error)
 	// RefreshRepos reloads the repo list after mutating operations (execute/restore/delete).
 	RefreshRepos func() ([]planfile.RepoRecord, error)
 
@@ -44,6 +46,16 @@ type RestoreRequest struct {
 	TargetOwner      string
 	TargetName       string
 	TargetVisibility string
+}
+
+type UpdateInfo struct {
+	CurrentVersion  string
+	LatestVersion   string
+	UpdateAvailable bool
+	ReleaseURL      string
+	CheckedAt       time.Time
+	Source          string
+	Error           string
 }
 
 type commandDef struct {
@@ -87,9 +99,11 @@ const (
 type settingsStage int
 
 const (
-	settingsStageHome settingsStage = iota
-	settingsStageLocalList
-	settingsStageRemoteList
+	settingsStageConfigHome settingsStage = iota
+	settingsStageThemeHome
+	settingsStageThemeLocalList
+	settingsStageThemeRemoteList
+	settingsStageUpdateHome
 )
 
 type settingsMode int
@@ -133,16 +147,21 @@ type appModel struct {
 }
 
 type settingsState struct {
-	stage         settingsStage
-	mode          settingsMode
-	cursor        int
-	homeCursor    int
-	activeTheme   string
-	currentLabel  string
-	currentSource string
-	localThemes   []string
-	remoteThemes  []ThemeOption
-	status        string
+	stage            settingsStage
+	mode             settingsMode
+	cursor           int
+	homeCursor       int
+	themeHomeCursor  int
+	updateHomeCursor int
+	activeTheme      string
+	currentLabel     string
+	currentSource    string
+	localThemes      []string
+	remoteThemes     []ThemeOption
+	status           string
+	updateInfo       UpdateInfo
+	updateBusy       bool
+	updateStatus     string
 }
 
 type commandResultMsg struct {
@@ -192,6 +211,16 @@ type settingsUninstallMsg struct {
 	err    error
 }
 
+type updateCheckedMsg struct {
+	info UpdateInfo
+	err  error
+}
+
+type updateRunMsg struct {
+	output string
+	err    error
+}
+
 var ansiRE = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
 func RunApp(repos []planfile.RepoRecord, callbacks AppCallbacks) error {
@@ -214,11 +243,14 @@ func newAppModel(repos []planfile.RepoRecord, callbacks AppCallbacks) appModel {
 			{name: "Execute", icon: "󰐊", desc: "Run execute workflow", fields: []formField{{key: "plan", label: "Plan path", kind: fieldText, placeholder: "(auto from current selection)"}, {key: "backup_location", label: "Backup location", kind: fieldText, placeholder: "(auto timestamp folder)"}, {key: "dry_run", label: "Dry run", kind: fieldBool, boolValue: true}, {key: "confirm", label: "Type ACCEPT or CONFIRM", kind: fieldText, required: true, placeholder: "CONFIRM"}}},
 			{name: "Restore", icon: "󰑐", desc: "Restore from local archive to GitHub"},
 			{name: "Delete", icon: "󰆴", desc: "Delete highlighted repository (no backup)"},
-			{name: "Settings", icon: "󰒓", desc: "Manage theme and UI preferences"},
+			{name: "Settings", icon: "󰒓", desc: "Manage configuration, theme, and updates"},
 		},
 		status:     "Ready",
 		appVersion: callbacks.Version,
 		theme:      callbacks.Theme.withDefaults(),
+		settings: settingsState{
+			updateInfo: UpdateInfo{CurrentVersion: formatVersionLabel(callbacks.Version)},
+		},
 	}
 }
 
@@ -228,7 +260,12 @@ func blinkCursorCmd() tea.Cmd {
 	})
 }
 
-func (m appModel) Init() tea.Cmd { return nil }
+func (m appModel) Init() tea.Cmd {
+	if m.callbacks.UpdateCheck == nil {
+		return nil
+	}
+	return m.updateCheckCmd()
+}
 
 func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -325,6 +362,33 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.theme = msg.theme.withDefaults()
 		m.settings.status = msg.output
 		return m, m.settingsListLocalCmd()
+	case updateCheckedMsg:
+		if msg.err != nil {
+			m.settings.updateInfo.UpdateAvailable = false
+			m.settings.updateInfo.Error = msg.err.Error()
+			m.settings.updateInfo.CheckedAt = time.Now()
+			m.settings.updateStatus = "Error: " + msg.err.Error()
+			return m, nil
+		}
+		m.settings.updateInfo = msg.info
+		if strings.TrimSpace(m.settings.updateInfo.CurrentVersion) == "" {
+			m.settings.updateInfo.CurrentVersion = formatVersionLabel(m.appVersion)
+		}
+		if m.settings.updateInfo.UpdateAvailable {
+			m.settings.updateStatus = fmt.Sprintf("Update available: %s", formatVersionLabel(m.settings.updateInfo.LatestVersion))
+		} else {
+			m.settings.updateStatus = "Already up to date"
+		}
+		return m, nil
+	case updateRunMsg:
+		m.settings.updateBusy = false
+		if msg.err != nil {
+			m.settings.updateStatus = "Error: " + msg.err.Error()
+			return m, nil
+		}
+		latest := formatVersionLabel(m.settings.updateInfo.LatestVersion)
+		m.settings.updateStatus = "Update installed. Restart gh-manager to use " + latest + "."
+		return m, m.openResultModal(msg.output)
 	case tea.KeyMsg:
 		s := msg.String()
 		if s == "ctrl+c" || s == "q" {
@@ -568,15 +632,19 @@ func (m *appModel) openSettingsModal() tea.Cmd {
 	m.modalKind = modalSettings
 	m.cursorVisible = false
 	m.settings = settingsState{
-		stage:      settingsStageHome,
-		mode:       settingsModeView,
-		homeCursor: 0,
-		status:     "Settings: manage themes",
+		stage:        settingsStageConfigHome,
+		mode:         settingsModeView,
+		homeCursor:   0,
+		status:       "Configuration",
+		updateInfo:   m.settings.updateInfo,
+		updateStatus: m.settings.updateStatus,
 	}
-	return tea.Batch(m.settingsCurrentCmd(), m.settingsListLocalCmd())
+	return tea.Batch(m.settingsCurrentCmd(), m.settingsListLocalCmd(), m.updateCheckCmd())
 }
 
 func (m *appModel) closeModal() {
+	savedUpdate := m.settings.updateInfo
+	savedUpdateStatus := m.settings.updateStatus
 	m.modalActive = false
 	m.modalKind = modalNone
 	m.cursorVisible = false
@@ -584,7 +652,10 @@ func (m *appModel) closeModal() {
 	m.resultScroll = 0
 	m.deleteRepo = planfile.RepoRecord{}
 	m.deleteInput = ""
-	m.settings = settingsState{}
+	m.settings = settingsState{
+		updateInfo:   savedUpdate,
+		updateStatus: savedUpdateStatus,
+	}
 }
 
 func (m *appModel) openResultModal(text string) tea.Cmd {
@@ -636,6 +707,26 @@ func (m appModel) settingsListRemoteCmd() tea.Cmd {
 	return func() tea.Msg {
 		themes, source, err := m.callbacks.ThemeListRemote()
 		return settingsRemoteMsg{themes: themes, source: source, err: err}
+	}
+}
+
+func (m appModel) updateCheckCmd() tea.Cmd {
+	if m.callbacks.UpdateCheck == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		info, err := m.callbacks.UpdateCheck()
+		return updateCheckedMsg{info: info, err: err}
+	}
+}
+
+func (m appModel) updateRunCmd() tea.Cmd {
+	if m.callbacks.UpdateRun == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		out, err := m.callbacks.UpdateRun()
+		return updateRunMsg{output: out, err: err}
 	}
 }
 
@@ -808,8 +899,8 @@ func (m appModel) updateModalInput(key string) (tea.Model, tea.Cmd) {
 func (m appModel) updateSettingsModal(key string) (tea.Model, tea.Cmd) {
 	s := m.settings
 	switch s.stage {
-	case settingsStageHome:
-		actions := []string{"Current", "List local themes", "Apply local theme", "Uninstall local theme", "List remote themes", "Install remote theme", "Close"}
+	case settingsStageConfigHome:
+		actions := []string{"Theme", "Update", "Close"}
 		switch key {
 		case "esc":
 			m.closeModal()
@@ -824,48 +915,77 @@ func (m appModel) updateSettingsModal(key string) (tea.Model, tea.Cmd) {
 			}
 		case "enter":
 			switch actions[s.homeCursor] {
-			case "Current":
+			case "Theme":
+				s.stage = settingsStageThemeHome
+				s.themeHomeCursor = 0
 				m.settings = s
 				return m, m.settingsCurrentCmd()
-			case "List local themes":
-				s.stage = settingsStageLocalList
-				s.mode = settingsModeView
-				s.cursor = 0
+			case "Update":
+				s.stage = settingsStageUpdateHome
+				s.updateHomeCursor = 0
 				m.settings = s
-				return m, m.settingsListLocalCmd()
-			case "Apply local theme":
-				s.stage = settingsStageLocalList
-				s.mode = settingsModeApply
-				s.cursor = 0
-				m.settings = s
-				return m, m.settingsListLocalCmd()
-			case "Uninstall local theme":
-				s.stage = settingsStageLocalList
-				s.mode = settingsModeUninstall
-				s.cursor = 0
-				m.settings = s
-				return m, m.settingsListLocalCmd()
-			case "List remote themes":
-				s.stage = settingsStageRemoteList
-				s.mode = settingsModeView
-				s.cursor = 0
-				m.settings = s
-				return m, m.settingsListRemoteCmd()
-			case "Install remote theme":
-				s.stage = settingsStageRemoteList
-				s.mode = settingsModeInstall
-				s.cursor = 0
-				m.settings = s
-				return m, m.settingsListRemoteCmd()
+				return m, m.updateCheckCmd()
 			case "Close":
 				m.closeModal()
 				return m, nil
 			}
 		}
-	case settingsStageLocalList:
+	case settingsStageThemeHome:
+		actions := []string{"Current", "List local themes", "Apply local theme", "Uninstall local theme", "List remote themes", "Install remote theme", "Back"}
 		switch key {
 		case "esc":
-			s.stage = settingsStageHome
+			s.stage = settingsStageConfigHome
+		case "up", "k":
+			if s.themeHomeCursor > 0 {
+				s.themeHomeCursor--
+			}
+		case "down", "j":
+			if s.themeHomeCursor < len(actions)-1 {
+				s.themeHomeCursor++
+			}
+		case "enter":
+			switch actions[s.themeHomeCursor] {
+			case "Current":
+				m.settings = s
+				return m, m.settingsCurrentCmd()
+			case "List local themes":
+				s.stage = settingsStageThemeLocalList
+				s.mode = settingsModeView
+				s.cursor = 0
+				m.settings = s
+				return m, m.settingsListLocalCmd()
+			case "Apply local theme":
+				s.stage = settingsStageThemeLocalList
+				s.mode = settingsModeApply
+				s.cursor = 0
+				m.settings = s
+				return m, m.settingsListLocalCmd()
+			case "Uninstall local theme":
+				s.stage = settingsStageThemeLocalList
+				s.mode = settingsModeUninstall
+				s.cursor = 0
+				m.settings = s
+				return m, m.settingsListLocalCmd()
+			case "List remote themes":
+				s.stage = settingsStageThemeRemoteList
+				s.mode = settingsModeView
+				s.cursor = 0
+				m.settings = s
+				return m, m.settingsListRemoteCmd()
+			case "Install remote theme":
+				s.stage = settingsStageThemeRemoteList
+				s.mode = settingsModeInstall
+				s.cursor = 0
+				m.settings = s
+				return m, m.settingsListRemoteCmd()
+			case "Back":
+				s.stage = settingsStageConfigHome
+			}
+		}
+	case settingsStageThemeLocalList:
+		switch key {
+		case "esc":
+			s.stage = settingsStageThemeHome
 		case "up", "k":
 			if s.cursor > 0 {
 				s.cursor--
@@ -903,10 +1023,10 @@ func (m appModel) updateSettingsModal(key string) (tea.Model, tea.Cmd) {
 			}
 			s.status = "Selected local theme: " + id
 		}
-	case settingsStageRemoteList:
+	case settingsStageThemeRemoteList:
 		switch key {
 		case "esc":
-			s.stage = settingsStageHome
+			s.stage = settingsStageThemeHome
 		case "up", "k":
 			if s.cursor > 0 {
 				s.cursor--
@@ -932,6 +1052,49 @@ func (m appModel) updateSettingsModal(key string) (tea.Model, tea.Cmd) {
 				}
 			}
 			s.status = "Remote theme: " + opt.ID
+		}
+	case settingsStageUpdateHome:
+		actions := []string{"Check now", "Update now", "View release URL", "Back"}
+		switch key {
+		case "esc":
+			s.stage = settingsStageConfigHome
+		case "up", "k":
+			if s.updateHomeCursor > 0 {
+				s.updateHomeCursor--
+			}
+		case "down", "j":
+			if s.updateHomeCursor < len(actions)-1 {
+				s.updateHomeCursor++
+			}
+		case "enter":
+			switch actions[s.updateHomeCursor] {
+			case "Check now":
+				m.settings = s
+				return m, m.updateCheckCmd()
+			case "Update now":
+				if s.updateBusy {
+					break
+				}
+				if !s.updateInfo.UpdateAvailable {
+					s.updateStatus = "Already up to date"
+					break
+				}
+				if m.callbacks.UpdateRun == nil {
+					s.updateStatus = "Error: update callback unavailable"
+					break
+				}
+				s.updateBusy = true
+				m.settings = s
+				return m, m.updateRunCmd()
+			case "View release URL":
+				if strings.TrimSpace(s.updateInfo.ReleaseURL) == "" {
+					s.updateStatus = "No release URL available"
+				} else {
+					s.updateStatus = s.updateInfo.ReleaseURL
+				}
+			case "Back":
+				s.stage = settingsStageConfigHome
+			}
 		}
 	}
 	m.settings = s
@@ -1151,27 +1314,49 @@ func (m appModel) renderModalOverlay() string {
 		}
 	case modalRestoreBrowse:
 		title = "Restore: Archive Browser"
-		lines = append(lines, "Select archive root.", "Enter to open/select, Backspace parent, Esc cancel.", "")
-		lines = append(lines, "dir: "+m.restoreState.browserDir, "")
+		lines = append(lines, "Select archive root.", "Enter open/select, Backspace parent, h/l scroll, Esc cancel.", "")
+		lines = append(lines, truncateRaw("dir: "+m.restoreState.browserDir, panelInnerWidth(width)), "")
+		itemWidth := panelInnerWidth(width) - 2
+		if itemWidth < 1 {
+			itemWidth = 1
+		}
+		scroll := m.restoreState.browserHScroll
+		maxScroll := 0
 		for i, it := range m.restoreState.browserItems {
 			prefix := "  "
 			if i == m.restoreState.browserCursor {
 				prefix = "> "
 			}
-			lines = append(lines, prefix+it.label)
+			label, _, max := windowedText(it.label, scroll, itemWidth)
+			if max > maxScroll {
+				maxScroll = max
+			}
+			lines = append(lines, prefix+label)
 		}
+		lines = append(lines, "", fmt.Sprintf("[h/l scroll: %d/%d]", clampInt(scroll, 0, maxScroll), maxScroll))
 		maxLines = 20
 	case modalRestoreSelectRepo:
 		title = "Restore: Select Repository"
-		lines = append(lines, "Archive: "+m.restoreState.archiveRoot, "Enter to choose source repo, Esc back.", "")
+		lines = append(lines, truncateRaw("Archive: "+m.restoreState.archiveRoot, panelInnerWidth(width)), "Enter choose source repo, h/l scroll, Esc back.", "")
+		itemWidth := panelInnerWidth(width) - 2
+		if itemWidth < 1 {
+			itemWidth = 1
+		}
+		scroll := m.restoreState.repoHScroll
+		maxScroll := 0
 		for i, r := range m.restoreState.repos {
 			prefix := "  "
 			if i == m.restoreState.repoCursor {
 				prefix = "> "
 			}
 			label := fmt.Sprintf("%s (%s)", r.fullName, r.sourceKind)
+			label, _, max := windowedText(label, scroll, itemWidth)
+			if max > maxScroll {
+				maxScroll = max
+			}
 			lines = append(lines, prefix+label)
 		}
+		lines = append(lines, "", fmt.Sprintf("[h/l scroll: %d/%d]", clampInt(scroll, 0, maxScroll), maxScroll))
 		maxLines = 20
 	case modalRestoreYesNo:
 		title = "Restore Confirmation"
@@ -1218,13 +1403,12 @@ func (m appModel) renderModalOverlay() string {
 	case modalSettings:
 		title = "Settings"
 		switch m.settings.stage {
-		case settingsStageHome:
+		case settingsStageConfigHome:
 			lines = append(lines,
-				"Theme settings",
-				fmt.Sprintf("Current: %s", m.settings.currentLabel),
+				"Configuration",
 				"",
 			)
-			actions := []string{"Current", "List local themes", "Apply local theme", "Uninstall local theme", "List remote themes", "Install remote theme", "Close"}
+			actions := []string{"Theme", "Update", "Close"}
 			for i, a := range actions {
 				p := "  "
 				if i == m.settings.homeCursor {
@@ -1235,7 +1419,24 @@ func (m appModel) renderModalOverlay() string {
 			if strings.TrimSpace(m.settings.status) != "" {
 				lines = append(lines, "", "Status: "+m.settings.status)
 			}
-		case settingsStageLocalList:
+		case settingsStageThemeHome:
+			lines = append(lines,
+				"Theme settings",
+				fmt.Sprintf("Current: %s", m.settings.currentLabel),
+				"",
+			)
+			actions := []string{"Current", "List local themes", "Apply local theme", "Uninstall local theme", "List remote themes", "Install remote theme", "Back"}
+			for i, a := range actions {
+				p := "  "
+				if i == m.settings.themeHomeCursor {
+					p = "> "
+				}
+				lines = append(lines, p+a)
+			}
+			if strings.TrimSpace(m.settings.status) != "" {
+				lines = append(lines, "", "Status: "+m.settings.status)
+			}
+		case settingsStageThemeLocalList:
 			modeLabel := "View local themes"
 			if m.settings.mode == settingsModeApply {
 				modeLabel = "Apply local theme"
@@ -1261,7 +1462,7 @@ func (m appModel) renderModalOverlay() string {
 			if strings.TrimSpace(m.settings.status) != "" {
 				lines = append(lines, "", "Status: "+m.settings.status)
 			}
-		case settingsStageRemoteList:
+		case settingsStageThemeRemoteList:
 			modeLabel := "View remote themes"
 			if m.settings.mode == settingsModeInstall {
 				modeLabel = "Install remote theme"
@@ -1279,6 +1480,29 @@ func (m appModel) renderModalOverlay() string {
 			}
 			if strings.TrimSpace(m.settings.status) != "" {
 				lines = append(lines, "", "Status: "+m.settings.status)
+			}
+		case settingsStageUpdateHome:
+			lines = append(lines,
+				"Update settings",
+				fmt.Sprintf("Current: %s", formatVersionLabel(m.settings.updateInfo.CurrentVersion)),
+			)
+			if strings.TrimSpace(m.settings.updateInfo.LatestVersion) != "" {
+				lines = append(lines, fmt.Sprintf("Latest: %s", formatVersionLabel(m.settings.updateInfo.LatestVersion)))
+			}
+			if strings.TrimSpace(m.settings.updateInfo.ReleaseURL) != "" {
+				lines = append(lines, "Release: "+m.settings.updateInfo.ReleaseURL)
+			}
+			lines = append(lines, "")
+			actions := []string{"Check now", "Update now", "View release URL", "Back"}
+			for i, a := range actions {
+				p := "  "
+				if i == m.settings.updateHomeCursor {
+					p = "> "
+				}
+				lines = append(lines, p+a)
+			}
+			if strings.TrimSpace(m.settings.updateStatus) != "" {
+				lines = append(lines, "", "Status: "+m.settings.updateStatus)
 			}
 		}
 		maxLines = 20
@@ -1534,15 +1758,40 @@ func (m appModel) renderTopBanner(maxWidth int) []string {
 		lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.LogoLine6)),
 	}
 	versionStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.TextMuted))
+	currentVersionStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.DangerText)).Bold(true)
+	latestVersionStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.SuccessText)).Bold(true)
+	updateAvailStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Success)).Bold(true)
+	updateFailStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.TextMuted))
+	updateIndicator := ""
+	if m.settings.updateInfo.UpdateAvailable {
+		cur := formatVersionLabel(m.settings.updateInfo.CurrentVersion)
+		if cur == "vdev" {
+			cur = version
+		}
+		updateIndicator = currentVersionStyle.Render(cur) +
+			versionStyle.Render(" -> ") +
+			latestVersionStyle.Render(formatVersionLabel(m.settings.updateInfo.LatestVersion)) +
+			versionStyle.Render(" - ") +
+			updateAvailStyle.Render("Update available!")
+	} else if strings.TrimSpace(m.settings.updateInfo.Error) != "" {
+		updateIndicator = updateFailStyle.Render("update check failed")
+	}
 	for i := range logo {
 		line := logoStyles[i].Render(logo[i])
 		if i < len(versionBlock) && versionBlock[i] != "" {
 			line += strings.Repeat(" ", lineGap) + versionStyle.Render(versionBlock[i])
+			if updateIndicator != "" {
+				line += strings.Repeat(" ", lineGap) + updateIndicator
+			}
 		}
 		out = append(out, line)
 	}
 	if maxWidth < 42 {
-		return []string{lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.HeaderText)).Render("gh-manager " + version)}
+		line := "gh-manager " + version
+		if updateIndicator != "" {
+			line += " " + stripANSI(updateIndicator)
+		}
+		return []string{lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.HeaderText)).Render(line)}
 	}
 	return out
 }
@@ -1643,4 +1892,35 @@ func truncateRaw(s string, max int) string {
 		return "~"
 	}
 	return string(r[:max-1]) + "~"
+}
+
+func windowedText(s string, offset, width int) (string, int, int) {
+	if width <= 0 {
+		return "", 0, 0
+	}
+	r := []rune(s)
+	if len(r) <= width {
+		return s, 0, 0
+	}
+	maxOffset := len(r) - width
+	offset = clampInt(offset, 0, maxOffset)
+	end := offset + width
+	out := append([]rune(nil), r[offset:end]...)
+	if offset > 0 && len(out) > 0 {
+		out[0] = '…'
+	}
+	if end < len(r) && len(out) > 0 {
+		out[len(out)-1] = '…'
+	}
+	return string(out), offset, maxOffset
+}
+
+func clampInt(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
 }

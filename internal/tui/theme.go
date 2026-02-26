@@ -11,6 +11,8 @@ type UITheme struct {
 	PopupOuterBorder   string
 	Danger             string
 	DangerText         string
+	Success            string
+	SuccessText        string
 	TextPrimary        string
 	TextMuted          string
 	SelectionBg        string
@@ -55,6 +57,8 @@ func uiThemeFromResolved(r theme.PaletteResolved) UITheme {
 		PopupOuterBorder:   r.PopupOuterBorder,
 		Danger:             r.Danger,
 		DangerText:         r.DangerText,
+		Success:            r.Success,
+		SuccessText:        r.SuccessText,
 		TextPrimary:        r.TextPrimary,
 		TextMuted:          r.TextMuted,
 		SelectionBg:        r.SelectionBg,
@@ -100,6 +104,12 @@ func (t UITheme) withDefaults() UITheme {
 	}
 	if t.DangerText == "" {
 		t.DangerText = d.DangerText
+	}
+	if t.Success == "" {
+		t.Success = d.Success
+	}
+	if t.SuccessText == "" {
+		t.SuccessText = d.SuccessText
 	}
 	if t.TextPrimary == "" {
 		t.TextPrimary = d.TextPrimary

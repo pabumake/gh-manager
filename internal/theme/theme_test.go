@@ -22,9 +22,15 @@ func TestResolveForTerminal(t *testing.T) {
 	if resolvedTrue.Danger != string(p.Danger) {
 		t.Fatalf("expected truecolor to keep hex")
 	}
+	if resolvedTrue.Success != string(p.Success) {
+		t.Fatalf("expected truecolor success to keep hex")
+	}
 	resolved256 := ResolveForTerminal(p, false)
 	if resolved256.Danger == "" || resolved256.Danger[0] == '#' {
 		t.Fatalf("expected numeric terminal color for 256 fallback, got %q", resolved256.Danger)
+	}
+	if resolved256.Success == "" || resolved256.Success[0] == '#' {
+		t.Fatalf("expected numeric terminal success color for 256 fallback, got %q", resolved256.Success)
 	}
 	if resolved256.ColName == "" || resolved256.LogoLine1 == "" {
 		t.Fatalf("expected extended fields to resolve")

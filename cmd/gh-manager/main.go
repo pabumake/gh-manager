@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -116,6 +118,12 @@ func runApp(ctx context.Context, gh github.Client, runner app.CommandRunner) err
 		},
 		ThemeUninstall: func(id string) (tui.UITheme, string, error) {
 			return themeUninstall(id)
+		},
+		UpdateCheck: func() (tui.UpdateInfo, error) {
+			return checkLatestRelease(ctx, runner)
+		},
+		UpdateRun: func() (string, error) {
+			return runSelfUpdate(ctx, runner)
 		},
 		RefreshRepos: func() ([]planfile.RepoRecord, error) {
 			return gh.ListUserRepos(ctx, actor)
@@ -644,6 +652,8 @@ func resolvedToUITheme(resolved themepkg.PaletteResolved) tui.UITheme {
 		PopupOuterBorder:   resolved.PopupOuterBorder,
 		Danger:             resolved.Danger,
 		DangerText:         resolved.DangerText,
+		Success:            resolved.Success,
+		SuccessText:        resolved.SuccessText,
 		TextPrimary:        resolved.TextPrimary,
 		TextMuted:          resolved.TextMuted,
 		SelectionBg:        resolved.SelectionBg,
@@ -668,6 +678,101 @@ func resolvedToUITheme(resolved themepkg.PaletteResolved) tui.UITheme {
 		DetailsLabel:       resolved.DetailsLabel,
 		DetailsValue:       resolved.DetailsValue,
 	}
+}
+
+type latestReleaseResponse struct {
+	TagName string `json:"tag_name"`
+	HTMLURL string `json:"html_url"`
+}
+
+func checkLatestRelease(ctx context.Context, runner app.CommandRunner) (tui.UpdateInfo, error) {
+	const source = "github-releases"
+	info := tui.UpdateInfo{
+		CurrentVersion: version.Value,
+		Source:         source,
+		CheckedAt:      time.Now(),
+	}
+
+	out, err := runner.Run(ctx, "gh", "api", "repos/pabumake/gh-manager/releases/latest")
+	if err != nil {
+		return info, err
+	}
+	var resp latestReleaseResponse
+	if err := json.Unmarshal(out, &resp); err != nil {
+		return info, fmt.Errorf("parse latest release: %w", err)
+	}
+	info.LatestVersion = strings.TrimSpace(string(resp.TagName))
+	info.ReleaseURL = strings.TrimSpace(resp.HTMLURL)
+	if info.LatestVersion == "" {
+		return info, errors.New("latest release tag is empty")
+	}
+	compare := compareSemverLabels(info.CurrentVersion, info.LatestVersion)
+	info.UpdateAvailable = compare < 0
+	return info, nil
+}
+
+func runSelfUpdate(ctx context.Context, runner app.CommandRunner) (string, error) {
+	var name string
+	var args []string
+	switch runtime.GOOS {
+	case "windows":
+		name = "powershell"
+		args = []string{
+			"-NoProfile",
+			"-Command",
+			"& ([scriptblock]::Create((irm https://raw.githubusercontent.com/pabumake/gh-manager/main/scripts/install.ps1)))",
+		}
+	default:
+		name = "bash"
+		args = []string{
+			"-lc",
+			"curl -fsSL https://raw.githubusercontent.com/pabumake/gh-manager/main/scripts/install.sh | bash",
+		}
+	}
+	out, err := runner.Run(ctx, name, args...)
+	if err != nil {
+		return "", err
+	}
+	s := strings.TrimSpace(string(out))
+	if s == "" {
+		s = "update complete"
+	}
+	return s, nil
+}
+
+func normalizeSemverLabel(v string) string {
+	s := strings.TrimSpace(v)
+	s = strings.TrimPrefix(s, "v")
+	if i := strings.IndexAny(s, "+-"); i >= 0 {
+		s = s[:i]
+	}
+	return s
+}
+
+func compareSemverLabels(a, b string) int {
+	pa := parseSemverParts(normalizeSemverLabel(a))
+	pb := parseSemverParts(normalizeSemverLabel(b))
+	for i := 0; i < 3; i++ {
+		if pa[i] < pb[i] {
+			return -1
+		}
+		if pa[i] > pb[i] {
+			return 1
+		}
+	}
+	return 0
+}
+
+func parseSemverParts(v string) [3]int {
+	var out [3]int
+	parts := strings.Split(v, ".")
+	for i := 0; i < len(parts) && i < 3; i++ {
+		n, err := strconv.Atoi(strings.TrimSpace(parts[i]))
+		if err == nil && n >= 0 {
+			out[i] = n
+		}
+	}
+	return out
 }
 
 func fetchThemeIndexWithLocalFallback(ctx context.Context, primaryURL string) (themepkg.ThemeIndex, string, error) {

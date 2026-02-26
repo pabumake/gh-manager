@@ -15,6 +15,8 @@ type PaletteHex struct {
 	PopupOuterBorder   Hex `json:"popup_outer_border"`
 	Danger             Hex `json:"danger"`
 	DangerText         Hex `json:"danger_text"`
+	Success            Hex `json:"success"`
+	SuccessText        Hex `json:"success_text"`
 	TextPrimary        Hex `json:"text_primary"`
 	TextMuted          Hex `json:"text_muted"`
 	SelectionBg        Hex `json:"selection_bg"`
@@ -54,6 +56,8 @@ type PaletteResolved struct {
 	PopupOuterBorder   string
 	Danger             string
 	DangerText         string
+	Success            string
+	SuccessText        string
 	TextPrimary        string
 	TextMuted          string
 	SelectionBg        string
@@ -101,6 +105,8 @@ func (p PaletteHex) Validate() error {
 		"popup_outer_border":   p.PopupOuterBorder,
 		"danger":               p.Danger,
 		"danger_text":          p.DangerText,
+		"success":              p.Success,
+		"success_text":         p.SuccessText,
 		"text_primary":         p.TextPrimary,
 		"text_muted":           p.TextMuted,
 		"selection_bg":         p.SelectionBg,
@@ -161,6 +167,8 @@ func DefaultPaletteHex() PaletteHex {
 		PopupOuterBorder:   "#000000",
 		Danger:             "#d70000",
 		DangerText:         "#d70000",
+		Success:            "#5faf5f",
+		SuccessText:        "#5faf5f",
 		TextPrimary:        "#ddd7c1",
 		TextMuted:          "#9e9987",
 		SelectionBg:        "#fff67d",

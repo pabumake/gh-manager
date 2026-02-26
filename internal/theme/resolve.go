@@ -49,6 +49,8 @@ func ResolveForTerminal(p PaletteHex, trueColor bool) PaletteResolved {
 		PopupOuterBorder:   resolve(p.PopupOuterBorder),
 		Danger:             resolve(p.Danger),
 		DangerText:         resolve(p.DangerText),
+		Success:            resolve(p.Success),
+		SuccessText:        resolve(p.SuccessText),
 		TextPrimary:        resolve(p.TextPrimary),
 		TextMuted:          resolve(p.TextMuted),
 		SelectionBg:        resolve(p.SelectionBg),

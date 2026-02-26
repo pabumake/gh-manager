@@ -309,6 +309,9 @@ func TestSettingsCommandOpensModal(t *testing.T) {
 	if cmd == nil {
 		t.Fatalf("expected settings init command")
 	}
+	if m.settings.stage != settingsStageConfigHome {
+		t.Fatalf("expected configuration home stage")
+	}
 }
 
 func TestSettingsApplyUpdatesThemeLive(t *testing.T) {
@@ -320,7 +323,7 @@ func TestSettingsApplyUpdatesThemeLive(t *testing.T) {
 	m.modalActive = true
 	m.modalKind = modalSettings
 	m.settings = settingsState{
-		stage:       settingsStageLocalList,
+		stage:       settingsStageThemeLocalList,
 		mode:        settingsModeApply,
 		localThemes: []string{"catppuccin-mocha"},
 		cursor:      0,
@@ -351,7 +354,7 @@ func TestSettingsUninstallUpdatesThemeLive(t *testing.T) {
 	m.modalActive = true
 	m.modalKind = modalSettings
 	m.settings = settingsState{
-		stage:       settingsStageLocalList,
+		stage:       settingsStageThemeLocalList,
 		mode:        settingsModeUninstall,
 		localThemes: []string{"catppuccin-mocha"},
 		cursor:      0,
@@ -367,6 +370,24 @@ func TestSettingsUninstallUpdatesThemeLive(t *testing.T) {
 	m3 := updated.(appModel)
 	if m3.theme.PaneBorderActive != "#fff67d" {
 		t.Fatalf("expected live-updated theme, got %q", m3.theme.PaneBorderActive)
+	}
+}
+
+func TestInitDispatchesUpdateCheck(t *testing.T) {
+	m := newAppModel(nil, AppCallbacks{
+		UpdateCheck: func() (UpdateInfo, error) {
+			return UpdateInfo{CurrentVersion: "v0.1.0", LatestVersion: "v0.1.1", UpdateAvailable: true}, nil
+		},
+	})
+	cmd := m.Init()
+	if cmd == nil {
+		t.Fatalf("expected update check cmd on init")
+	}
+	msg := cmd()
+	updated, _ := m.Update(msg)
+	m2 := updated.(appModel)
+	if !m2.settings.updateInfo.UpdateAvailable {
+		t.Fatalf("expected update available state after init check")
 	}
 }
 
@@ -400,6 +421,31 @@ func TestFormatVersionLabel(t *testing.T) {
 		if got := formatVersionLabel(tc.in); got != tc.want {
 			t.Fatalf("formatVersionLabel(%q)=%q want %q", tc.in, got, tc.want)
 		}
+	}
+}
+
+func TestSettingsConfigHomeContainsThemeAndUpdate(t *testing.T) {
+	m := newAppModel(nil, AppCallbacks{})
+	m.modalActive = true
+	m.modalKind = modalSettings
+	m.settings = settingsState{stage: settingsStageConfigHome}
+	out := m.renderModalOverlay()
+	if !strings.Contains(out, "Theme") || !strings.Contains(out, "Update") {
+		t.Fatalf("expected Theme and Update in config home")
+	}
+}
+
+func TestBannerShowsUpdateIndicator(t *testing.T) {
+	m := newAppModel(nil, AppCallbacks{Version: "0.1.0"})
+	m.settings.updateInfo = UpdateInfo{
+		CurrentVersion:  "v0.1.0",
+		LatestVersion:   "v0.1.1",
+		UpdateAvailable: true,
+	}
+	lines := m.renderTopBanner(200)
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "Update available!") {
+		t.Fatalf("expected update indicator in banner")
 	}
 }
 

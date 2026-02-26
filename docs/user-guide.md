@@ -168,9 +168,12 @@ Local preview before push:
 - user must type the exact repository name and press `enter`
 - Settings flow:
 - command: `Settings` from commands pane
-- popup supports current/list/apply/install/uninstall theme actions
+- popup opens `Configuration` with submenus: `Theme` and `Update`
+- Theme submenu supports current/list/apply/install/uninstall actions
 - applying a theme updates the live TUI immediately (no restart)
 - uninstalling the active theme automatically switches back to `default`
+- Update submenu supports `Check now` and `Update now` (self-update)
+- successful update requires restarting `gh-manager` to run the new binary
 - Plan TUI (`gh-manager plan`) compatibility:
 - `s`: save plan and exit
 - `q`: quit without saving
@@ -303,3 +306,4 @@ gh-manager execute --plan plan.json --dry-run
   - `gh-manager theme apply catppuccin-mocha`
 - To roll back to built-in styling:
   - `gh-manager theme apply default`
+- Update checks use GitHub Releases API and may fail under API/network restrictions; use Settings -> Update -> Check now to retry.
