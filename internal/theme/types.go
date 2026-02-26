@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strings"
 )
 
 type Hex string
@@ -43,10 +44,19 @@ type PaletteHex struct {
 }
 
 type ThemeFile struct {
-	ID      string     `json:"id"`
-	Name    string     `json:"name"`
-	Version int        `json:"version"`
-	Colors  PaletteHex `json:"colors"`
+	ID      string            `json:"id"`
+	Name    string            `json:"name"`
+	Version int               `json:"version"`
+	Vars    map[string]string `json:"vars,omitempty"`
+	Colors  PaletteHex        `json:"colors"`
+}
+
+type themeFileRaw struct {
+	ID      string            `json:"id"`
+	Name    string            `json:"name"`
+	Version int               `json:"version"`
+	Vars    map[string]string `json:"vars,omitempty"`
+	Colors  map[string]string `json:"colors"`
 }
 
 type PaletteResolved struct {
@@ -96,6 +106,7 @@ type ThemeIndexEntry struct {
 }
 
 var hexRe = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
+var varRefRe = regexp.MustCompile(`^var\(--([a-zA-Z0-9_-]+)\)$`)
 
 func (p PaletteHex) Validate() error {
 	fields := map[string]Hex{
@@ -140,12 +151,18 @@ func (p PaletteHex) Validate() error {
 }
 
 func ParseThemeFile(b []byte) (ThemeFile, error) {
-	t := ThemeFile{
+	raw := themeFileRaw{
 		Version: 1,
-		Colors:  DefaultPaletteHex(),
 	}
-	if err := json.Unmarshal(b, &t); err != nil {
+	if err := json.Unmarshal(b, &raw); err != nil {
 		return ThemeFile{}, err
+	}
+	t := ThemeFile{
+		ID:      raw.ID,
+		Name:    raw.Name,
+		Version: raw.Version,
+		Vars:    cloneStringMap(raw.Vars),
+		Colors:  DefaultPaletteHex(),
 	}
 	if t.ID == "" {
 		return ThemeFile{}, fmt.Errorf("theme id is required")
@@ -153,10 +170,177 @@ func ParseThemeFile(b []byte) (ThemeFile, error) {
 	if t.Version == 0 {
 		t.Version = 1
 	}
+	resolvedVars, err := resolveAllVars(raw.Vars)
+	if err != nil {
+		return ThemeFile{}, err
+	}
+	for key, value := range raw.Colors {
+		resolved, err := resolveColorValue(value, resolvedVars)
+		if err != nil {
+			return ThemeFile{}, fmt.Errorf("invalid color for %s: %w", key, err)
+		}
+		applyColorOverride(&t.Colors, key, resolved)
+	}
 	if err := t.Colors.Validate(); err != nil {
 		return ThemeFile{}, err
 	}
 	return t, nil
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func parseVarRef(v string) (string, bool) {
+	m := varRefRe.FindStringSubmatch(strings.TrimSpace(v))
+	if len(m) != 2 {
+		return "", false
+	}
+	return m[1], true
+}
+
+func resolveAllVars(vars map[string]string) (map[string]string, error) {
+	if len(vars) == 0 {
+		return map[string]string{}, nil
+	}
+	resolved := make(map[string]string, len(vars))
+	visiting := make(map[string]bool, len(vars))
+
+	var resolveVar func(name string, chain []string) (string, error)
+	resolveVar = func(name string, chain []string) (string, error) {
+		if v, ok := resolved[name]; ok {
+			return v, nil
+		}
+		if visiting[name] {
+			cycle := append(append([]string(nil), chain...), name)
+			parts := make([]string, 0, len(cycle))
+			for _, c := range cycle {
+				parts = append(parts, "--"+c)
+			}
+			return "", fmt.Errorf("circular variable reference: %s", strings.Join(parts, " -> "))
+		}
+		raw, ok := vars[name]
+		if !ok {
+			return "", fmt.Errorf("unknown color variable: --%s", name)
+		}
+		raw = strings.TrimSpace(raw)
+		visiting[name] = true
+		defer delete(visiting, name)
+		if hexRe.MatchString(raw) {
+			resolved[name] = raw
+			return raw, nil
+		}
+		if ref, ok := parseVarRef(raw); ok {
+			v, err := resolveVar(ref, append(chain, name))
+			if err != nil {
+				return "", err
+			}
+			resolved[name] = v
+			return v, nil
+		}
+		return "", fmt.Errorf("invalid variable value for --%s: %q", name, raw)
+	}
+
+	for name := range vars {
+		if _, err := resolveVar(name, nil); err != nil {
+			return nil, err
+		}
+	}
+	return resolved, nil
+}
+
+func resolveColorValue(value string, vars map[string]string) (Hex, error) {
+	v := strings.TrimSpace(value)
+	if hexRe.MatchString(v) {
+		return Hex(v), nil
+	}
+	if ref, ok := parseVarRef(v); ok {
+		resolved, ok := vars[ref]
+		if !ok {
+			return "", fmt.Errorf("unknown color variable: --%s", ref)
+		}
+		if !hexRe.MatchString(resolved) {
+			return "", fmt.Errorf("resolved variable --%s is not hex: %q", ref, resolved)
+		}
+		return Hex(resolved), nil
+	}
+	return "", fmt.Errorf("expected hex or var(--token), got %q", value)
+}
+
+func applyColorOverride(p *PaletteHex, key string, value Hex) {
+	switch key {
+	case "pane_border_active":
+		p.PaneBorderActive = value
+	case "pane_border_inactive":
+		p.PaneBorderInactive = value
+	case "popup_border":
+		p.PopupBorder = value
+	case "popup_outer_border":
+		p.PopupOuterBorder = value
+	case "danger":
+		p.Danger = value
+	case "danger_text":
+		p.DangerText = value
+	case "success":
+		p.Success = value
+	case "success_text":
+		p.SuccessText = value
+	case "text_primary":
+		p.TextPrimary = value
+	case "text_muted":
+		p.TextMuted = value
+	case "selection_bg":
+		p.SelectionBg = value
+	case "selection_fg":
+		p.SelectionFg = value
+	case "logo_line_1":
+		p.LogoLine1 = value
+	case "logo_line_2":
+		p.LogoLine2 = value
+	case "logo_line_3":
+		p.LogoLine3 = value
+	case "logo_line_4":
+		p.LogoLine4 = value
+	case "logo_line_5":
+		p.LogoLine5 = value
+	case "logo_line_6":
+		p.LogoLine6 = value
+	case "header_text":
+		p.HeaderText = value
+	case "help_text":
+		p.HelpText = value
+	case "status_text":
+		p.StatusText = value
+	case "table_header":
+		p.TableHeader = value
+	case "col_sel":
+		p.ColSel = value
+	case "col_name":
+		p.ColName = value
+	case "col_visibility":
+		p.ColVisibility = value
+	case "col_fork":
+		p.ColFork = value
+	case "col_archived":
+		p.ColArchived = value
+	case "col_updated":
+		p.ColUpdated = value
+	case "col_description":
+		p.ColDescription = value
+	case "details_label":
+		p.DetailsLabel = value
+	case "details_value":
+		p.DetailsValue = value
+	default:
+		// Ignore unknown color keys for forward/backward compatibility.
+	}
 }
 
 func DefaultPaletteHex() PaletteHex {

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -446,6 +447,32 @@ func TestBannerShowsUpdateIndicator(t *testing.T) {
 	joined := strings.Join(lines, "\n")
 	if !strings.Contains(joined, "Update available!") {
 		t.Fatalf("expected update indicator in banner")
+	}
+}
+
+func TestRestoreSelectRepoKeepsCursorVisibleInViewport(t *testing.T) {
+	m := newAppModel(nil, AppCallbacks{})
+	m.width = 120
+	m.height = 36
+	m.modalActive = true
+	m.modalKind = modalRestoreSelectRepo
+	repos := make([]restoreRepoItem, 0, 40)
+	for i := 1; i <= 40; i++ {
+		repos = append(repos, restoreRepoItem{
+			fullName:   fmt.Sprintf("alice/repo-%02d", i),
+			sourceKind: "bundle",
+		})
+	}
+	m.restoreState = restoreState{
+		active:      true,
+		stage:       restoreStageSelectRepo,
+		archiveRoot: "/tmp/archive",
+		repos:       repos,
+		repoCursor:  39,
+	}
+	view := m.renderModalOverlay()
+	if !strings.Contains(view, "alice/repo-40") {
+		t.Fatalf("expected selected repo to remain visible in viewport")
 	}
 }
 

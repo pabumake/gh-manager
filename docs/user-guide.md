@@ -84,6 +84,8 @@ Files and directories:
 
 Notes:
 - Theme files use hex colors (`#RRGGBB`).
+- Theme files can define top-level `vars` and reference them with `var(--token)`.
+- `colors` accepts either hex or `var(--token)` values.
 - On truecolor terminals, hex colors are used directly.
 - On non-truecolor terminals, colors are converted to nearest xterm-256 colors at runtime.
 - If no theme is configured or loading fails, `gh-manager` falls back to built-in default styling.

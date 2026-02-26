@@ -1,8 +1,14 @@
 # Theme Repository Files
 
 - `index.json`: curated installable theme list used by `gh-manager theme list --remote` and `gh-manager theme install <id>`.
-- `*.json`: theme definitions with hex colors (`#RRGGBB`).
+- `*.json`: theme definitions with hex colors (`#RRGGBB`) and optional variables.
 - Remote consumers use: `https://raw.githubusercontent.com/pabumake/gh-manager/main/themes/index.json`
+
+Theme variable syntax:
+- Declare shared tokens in top-level `vars`.
+- Reference tokens from `colors` (or other vars) via `var(--token)`.
+- `colors` still accepts direct hex values for one-off assignments.
+- Unknown variables, invalid refs, or cycles fail theme parsing.
 
 ## Contribution
 

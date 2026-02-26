@@ -1288,7 +1288,9 @@ func (m appModel) renderModalOverlay() string {
 	}
 	title := "Input"
 	lines := []string{}
-	maxLines := 14
+	scaledMaxLines := m.modalMaxLines()
+	maxLines := scaledMaxLines
+	useRawFit := false
 	popupBorderColor := lipgloss.Color(m.theme.PopupBorder)
 	switch m.modalKind {
 	case modalCommandForm:
@@ -1322,19 +1324,35 @@ func (m appModel) renderModalOverlay() string {
 		}
 		scroll := m.restoreState.browserHScroll
 		maxScroll := 0
-		for i, it := range m.restoreState.browserItems {
-			prefix := "  "
-			if i == m.restoreState.browserCursor {
-				prefix = "> "
-			}
-			label, _, max := windowedText(it.label, scroll, itemWidth)
+		for _, it := range m.restoreState.browserItems {
+			_, _, max := windowedText(it.label, scroll, itemWidth)
 			if max > maxScroll {
 				maxScroll = max
 			}
-			lines = append(lines, prefix+label)
 		}
-		lines = append(lines, "", fmt.Sprintf("[h/l scroll: %d/%d]", clampInt(scroll, 0, maxScroll), maxScroll))
-		maxLines = 20
+		visibleRows := maxLines - len(lines) - 2
+		if visibleRows < 1 {
+			visibleRows = 1
+		}
+		start, end := viewportBounds(len(m.restoreState.browserItems), m.restoreState.browserCursor, visibleRows)
+		for i := start; i < end; i++ {
+			it := m.restoreState.browserItems[i]
+			label, _, _ := windowedText(it.label, scroll, itemWidth)
+			line := truncateRaw("  "+label, panelInnerWidth(width))
+			if i == m.restoreState.browserCursor {
+				line = lipgloss.NewStyle().
+					Foreground(lipgloss.Color(m.theme.SelectionFg)).
+					Background(lipgloss.Color(m.theme.SelectionBg)).
+					Render(line)
+			}
+			lines = append(lines, line)
+		}
+		pos := 0
+		if len(m.restoreState.browserItems) > 0 {
+			pos = m.restoreState.browserCursor + 1
+		}
+		lines = append(lines, "", fmt.Sprintf("[j/k: %d/%d | h/l: %d/%d]", pos, len(m.restoreState.browserItems), clampInt(scroll, 0, maxScroll), maxScroll))
+		useRawFit = true
 	case modalRestoreSelectRepo:
 		title = "Restore: Select Repository"
 		lines = append(lines, truncateRaw("Archive: "+m.restoreState.archiveRoot, panelInnerWidth(width)), "Enter choose source repo, h/l scroll, Esc back.", "")
@@ -1344,20 +1362,37 @@ func (m appModel) renderModalOverlay() string {
 		}
 		scroll := m.restoreState.repoHScroll
 		maxScroll := 0
-		for i, r := range m.restoreState.repos {
-			prefix := "  "
-			if i == m.restoreState.repoCursor {
-				prefix = "> "
-			}
+		for _, r := range m.restoreState.repos {
 			label := fmt.Sprintf("%s (%s)", r.fullName, r.sourceKind)
-			label, _, max := windowedText(label, scroll, itemWidth)
+			_, _, max := windowedText(label, scroll, itemWidth)
 			if max > maxScroll {
 				maxScroll = max
 			}
-			lines = append(lines, prefix+label)
 		}
-		lines = append(lines, "", fmt.Sprintf("[h/l scroll: %d/%d]", clampInt(scroll, 0, maxScroll), maxScroll))
-		maxLines = 20
+		visibleRows := maxLines - len(lines) - 2
+		if visibleRows < 1 {
+			visibleRows = 1
+		}
+		start, end := viewportBounds(len(m.restoreState.repos), m.restoreState.repoCursor, visibleRows)
+		for i := start; i < end; i++ {
+			r := m.restoreState.repos[i]
+			label := fmt.Sprintf("%s (%s)", r.fullName, r.sourceKind)
+			label, _, _ = windowedText(label, scroll, itemWidth)
+			line := truncateRaw("  "+label, panelInnerWidth(width))
+			if i == m.restoreState.repoCursor {
+				line = lipgloss.NewStyle().
+					Foreground(lipgloss.Color(m.theme.SelectionFg)).
+					Background(lipgloss.Color(m.theme.SelectionBg)).
+					Render(line)
+			}
+			lines = append(lines, line)
+		}
+		pos := 0
+		if len(m.restoreState.repos) > 0 {
+			pos = m.restoreState.repoCursor + 1
+		}
+		lines = append(lines, "", fmt.Sprintf("[j/k: %d/%d | h/l: %d/%d]", pos, len(m.restoreState.repos), clampInt(scroll, 0, maxScroll), maxScroll))
+		useRawFit = true
 	case modalRestoreYesNo:
 		title = "Restore Confirmation"
 		lines = append(lines,
@@ -1399,7 +1434,6 @@ func (m appModel) renderModalOverlay() string {
 			"Type repo name to confirm: "+bold.Render(m.deleteRepo.Name),
 			renderInputLineWithCursor(m.deleteInput, m.cursorVisible),
 		)
-		maxLines = 18
 	case modalSettings:
 		title = "Settings"
 		switch m.settings.stage {
@@ -1505,13 +1539,16 @@ func (m appModel) renderModalOverlay() string {
 				lines = append(lines, "", "Status: "+m.settings.updateStatus)
 			}
 		}
-		maxLines = 20
 	case modalResult:
 		title = "Result"
-		lines = append(lines, m.renderResultModalLines(panelInnerWidth(width), 14)...)
+		lines = append(lines, m.renderResultModalLines(panelInnerWidth(width), maxLines)...)
 	}
 	if m.modalKind != modalResult {
-		lines = fitAndWrapLines(lines, maxLines, panelInnerWidth(width))
+		if useRawFit {
+			lines = fitLines(lines, maxLines)
+		} else {
+			lines = fitAndWrapLines(lines, maxLines, panelInnerWidth(width))
+		}
 	}
 	content := strings.Join(lines, "\n")
 	inner := lipgloss.NewStyle().
@@ -1525,6 +1562,18 @@ func (m appModel) renderModalOverlay() string {
 		BorderForeground(lipgloss.Color(m.theme.PopupOuterBorder)).
 		Padding(0, 1).
 		Render(inner)
+}
+
+func (m appModel) modalMaxLines() int {
+	// Keep some breathing room around the centered popup while scaling with terminal height.
+	h := m.height - 12
+	if h < 12 {
+		h = 12
+	}
+	if h > 42 {
+		h = 42
+	}
+	return h
 }
 
 func (m appModel) renderResultModalLines(maxWidth, maxLines int) []string {
@@ -1923,4 +1972,25 @@ func clampInt(v, lo, hi int) int {
 		return hi
 	}
 	return v
+}
+
+func viewportBounds(total, cursor, visible int) (int, int) {
+	if total <= 0 || visible <= 0 {
+		return 0, 0
+	}
+	if visible > total {
+		visible = total
+	}
+	cursor = clampInt(cursor, 0, total-1)
+	start := cursor - (visible / 2)
+	if start < 0 {
+		start = 0
+	}
+	if start+visible > total {
+		start = total - visible
+	}
+	if start < 0 {
+		start = 0
+	}
+	return start, start + visible
 }

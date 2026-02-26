@@ -31,7 +31,7 @@ func TestCompareSemverLabels(t *testing.T) {
 }
 
 func TestCheckLatestRelease(t *testing.T) {
-	r := fakeRunner{out: []byte(`{"tag_name":"v0.1.1","html_url":"https://example.test/release"}`)}
+	r := fakeRunner{out: []byte(`{"tag_name":"v0.1.3","html_url":"https://example.test/release"}`)}
 	info, err := checkLatestRelease(context.Background(), r)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -39,7 +39,7 @@ func TestCheckLatestRelease(t *testing.T) {
 	if !info.UpdateAvailable {
 		t.Fatalf("expected update available")
 	}
-	if info.LatestVersion != "v0.1.1" {
+	if info.LatestVersion != "v0.1.3" {
 		t.Fatalf("unexpected latest version: %s", info.LatestVersion)
 	}
 }
